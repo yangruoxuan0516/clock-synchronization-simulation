@@ -1,0 +1,7 @@
+{
+  "role": "CM",
+  "es_id": 2,
+  "t1": 120.0,
+  "e1": 0.2,
+  "topology_path": "topology.json"
+}

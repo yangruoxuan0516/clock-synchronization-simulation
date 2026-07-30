@@ -1,0 +1,7 @@
+{
+  "role": "CA",
+  "es_id": 102,
+  "t2": 320.0,
+  "dmax": 50.0,
+  "topology_path": "topology.json"
+}

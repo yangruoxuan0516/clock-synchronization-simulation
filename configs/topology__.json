@@ -1,0 +1,44 @@
+{
+  "endpoints": [
+    {
+      "es_id": 1,
+      "name": "CM1",
+      "role": "CM",
+      "ip": "127.0.0.1",
+      "port": 12001
+    },
+    {
+      "es_id": 2,
+      "name": "CM2",
+      "role": "CM",
+      "ip": "127.0.0.1",
+      "port": 12002
+    },
+    {
+      "es_id": 101,
+      "name": "CA101",
+      "role": "CA",
+      "ip": "127.0.0.1",
+      "port": 12101
+    },
+    {
+      "es_id": 102,
+      "name": "CA102",
+      "role": "CA",
+      "ip": "127.0.0.1",
+      "port": 12102
+    }
+  ],
+  "ca_parameters": {
+    "101": {
+      "l2": 0.25,
+      "clock_drift_rate": 0.00001,
+      "relative_offset_delay": 1.5
+    },
+    "102": {
+      "l2": 0.4,
+      "clock_drift_rate": 0.00002,
+      "relative_offset_delay": 2.0
+    }
+  }
+}
