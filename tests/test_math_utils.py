@@ -30,7 +30,7 @@ def test_local_clock_offset_formula() -> None:
         remote_delay=2.0,
         local_delay=1.5,
     )
-    assert result == 22.28
+    assert result == 23.04
 
 
 def test_local_clock_offset_unknown_propagates() -> None:

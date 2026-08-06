@@ -228,3 +228,32 @@ The tests cover configuration validation, duplicate ES_ID detection, protocol se
 - Datagram sender IP/port is not cryptographically authenticated. The protocol validates message structure, ES_ID, role, and destination fields.
 - The GUI shows numeric values to three decimal places, while local-offset calculations are not forcibly quantized unless the specified formula requires it.
 - The project does not simulate true clock drift over time; `clock_drift_rate` is used only in `relative_offset_error`.
+
+
+## Patch: Per-CA `probe_enabled` switch
+
+`probe_enabled` is a simulation-only UDP transport compatibility option in each CA node JSON. It is not part of the logical time-synchronization or time-integrity protocol.
+
+```json
+{
+  "role": "CA",
+  "es_id": 101,
+  "t2": 300.0,
+  "dmax": 50.0,
+  "topology_path": "topology.json",
+  "probe_enabled": true
+}
+```
+
+- `true`: this CA actively sends both CA-to-CM `transport_probe` messages and CA-to-CA `ca_peer_probe` messages. The first CA data message may be queued until the peer path is ready.
+- `false`: this CA sends no probes. CM traffic uses normal direct CM push, and CA data is sent once directly to the endpoint in `topology.json`.
+- omitted: defaults to `false`.
+
+A CA always accepts and replies to an incoming CA peer probe even when its own switch is false. A CM always accepts an incoming transport probe. This permits only the CA running on a restrictive Windows host to set `true`, while a CA on macOS can set `false`.
+
+Current probe intervals when enabled:
+
+- CA-to-CM transport probe: every 20 ms to every configured CM.
+- CA-to-CA peer probe: every 500 ms to every other configured CA.
+
+Configuration changes require restarting that CA process.
