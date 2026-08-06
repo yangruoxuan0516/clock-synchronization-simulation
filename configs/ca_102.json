@@ -4,5 +4,5 @@
   "t2": 320.0,
   "dmax": 0.0,
   "topology_path": "topology.json",
-  "probe_enabled": false
+  "probe_enabled": true
 }
