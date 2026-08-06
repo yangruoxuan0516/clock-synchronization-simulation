@@ -1,0 +1,23 @@
+{
+  "node_id": "A",
+  "bind_ip": "0.0.0.0",
+  "bind_port": 40101,
+  "peer_id": "B",
+  "peer_ip": "CHANGE_TO_PC_B_IP",
+  "peer_port": 40102,
+  "probe_mode": "periodic",
+  "probe_interval_ms": 500,
+  "route_ttl_ms": null,
+  "data_ack_timeout_ms": 3000,
+  "auto_start_tests": true,
+  "auto_test_sender": true,
+  "auto_idle_tests_sec": [
+    5,
+    30,
+    60,
+    300,
+    600
+  ],
+  "auto_test_repetitions": 1,
+  "log_file": "A_periodic.csv"
+}
