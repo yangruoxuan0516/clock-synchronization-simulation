@@ -3,5 +3,6 @@
   "es_id": 101,
   "t2": 300.0,
   "dmax": 50.0,
-  "topology_path": "topology.json"
+  "topology_path": "topology.json",
+  "probe_enabled": false
 }

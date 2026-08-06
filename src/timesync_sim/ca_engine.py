@@ -9,6 +9,7 @@ from PySide6.QtCore import QElapsedTimer, QObject, QTimer, Qt, Signal
 from .constants import (
     CM_UNAVAILABLE_MS,
     CYCLE_MS,
+    LOCAL_CLOCK_OFFSET_EXPIRY_MS,
     RESET_COUNTER_MODULUS,
 )
 from .logic import (
@@ -16,6 +17,7 @@ from .logic import (
     choose_initial_cm,
     compute_local_offsets_from_list,
     evaluate_time_integrity,
+    local_clock_offsets_are_stale,
 )
 from .models import (
     CANodeConfig,
@@ -68,6 +70,7 @@ class CAEngine(QObject):
         self.local_clock_offsets: Dict[int, Optional[float]] = {
             ca_id: None for ca_id in self.remote_ca_ids
         }
+        self.last_local_clock_offset_update_ms: Optional[int] = None
         self.reset_counter = 0
         self.current_used_clock_list: Optional[ClockOffsetListMessage] = None
 
@@ -96,6 +99,13 @@ class CAEngine(QObject):
         self.tick_timer = QTimer(self)
         self.tick_timer.setInterval(20)
         self.tick_timer.timeout.connect(self._on_tick)
+
+        self.local_offset_expiry_timer = QTimer(self)
+        self.local_offset_expiry_timer.setSingleShot(True)
+        self.local_offset_expiry_timer.setTimerType(Qt.PreciseTimer)
+        self.local_offset_expiry_timer.timeout.connect(
+            self._expire_stale_local_clock_offsets
+        )
 
         # Some managed Windows systems only admit an immediate UDP response
         # to a locally initiated datagram.  Poll every few milliseconds from
@@ -131,8 +141,9 @@ class CAEngine(QObject):
         self.running = True
         self.elapsed.start()
         self.tick_timer.start()
-        self.transport_probe_timer.start()
-        self.peer_probe_timer.start()
+        if self.config.probe_enabled:
+            self.transport_probe_timer.start()
+            self.peer_probe_timer.start()
         self.log_message.emit(
             f"CA ES_ID={self.config.es_id} listening on UDP "
             f"0.0.0.0:{self.local_endpoint.port}; advertised as "
@@ -147,8 +158,13 @@ class CAEngine(QObject):
                 )
             )
         )
-        self._send_transport_probes()
-        self._send_ca_peer_probes()
+        self.log_message.emit(
+            "Simulation UDP probes: "
+            + ("enabled" if self.config.probe_enabled else "disabled")
+        )
+        if self.config.probe_enabled:
+            self._send_transport_probes()
+            self._send_ca_peer_probes()
         self._on_tick()
 
     def stop(self) -> None:
@@ -156,6 +172,7 @@ class CAEngine(QObject):
         self.tick_timer.stop()
         self.transport_probe_timer.stop()
         self.peer_probe_timer.stop()
+        self.local_offset_expiry_timer.stop()
         self._cancel_timers(self.response_timers)
         self._cancel_timers(self.apply_timers)
 
@@ -167,6 +184,8 @@ class CAEngine(QObject):
     def reset(self, new_t2: Optional[float] = None) -> None:
         self.reset_counter = (self.reset_counter + 1) % RESET_COUNTER_MODULUS
         self.local_clock_offsets = {ca_id: None for ca_id in self.remote_ca_ids}
+        self.last_local_clock_offset_update_ms = None
+        self.local_offset_expiry_timer.stop()
         self.current_used_clock_list = None
         self.reset_generation += 1
         self._cancel_timers(self.response_timers)
@@ -206,10 +225,23 @@ class CAEngine(QObject):
             )
             return
 
-        # Do not sacrifice the user's first data message merely to open a UDP
-        # path. Queue it, initiate the transport handshake, and send it as soon
-        # as either a probe or ACK reveals a usable peer route. Reset clears
-        # this queue, matching the requirement to cancel unsent messages.
+        if not self.config.probe_enabled:
+            # Original simulation behavior: perform one direct UDP send using
+            # the endpoint declared in topology.json. No transport-only probe,
+            # ACK, queueing, or retry is introduced by this CA.
+            self.transport.send(message, endpoint)
+            self.log_message.emit(
+                f"Sent CA message directly to {receiver_ca_es_id} with "
+                f"transmission_latency={transmission_latency} ms "
+                "(probe_enabled=false)"
+            )
+            return
+
+        # Compatibility mode: do not sacrifice the user's first data message
+        # merely to open a UDP path. Queue it, initiate the transport handshake,
+        # and send it as soon as either a probe or ACK reveals a usable route.
+        # Reset clears this queue, matching the requirement to cancel unsent
+        # messages.
         self.pending_peer_messages[receiver_ca_es_id].append(message)
         self._send_ca_peer_probe(receiver_ca_es_id)
         self.log_message.emit(
@@ -493,12 +525,41 @@ class CAEngine(QObject):
         if selected_cm != self.selected_cm_es_id:
             return
         self.local_clock_offsets = dict(computed_offsets)
+        self.last_local_clock_offset_update_ms = self.elapsed.elapsed()
+        self.local_offset_expiry_timer.start(LOCAL_CLOCK_OFFSET_EXPIRY_MS + 1)
         self.current_used_clock_list = message
         self.log_message.emit(
             f"local_clock_offset from CM {message.cm_es_id}, list "
             f"{message.request_number}, is now effective"
         )
         self.state_changed.emit(self.snapshot())
+
+    def _expire_stale_local_clock_offsets(self) -> None:
+        now_ms = self.elapsed.elapsed()
+        if not local_clock_offsets_are_stale(
+            self.last_local_clock_offset_update_ms,
+            now_ms,
+        ):
+            if self.last_local_clock_offset_update_ms is not None:
+                age_ms = now_ms - self.last_local_clock_offset_update_ms
+                remaining_ms = max(
+                    1,
+                    LOCAL_CLOCK_OFFSET_EXPIRY_MS + 1 - age_ms,
+                )
+                self.local_offset_expiry_timer.start(remaining_ms)
+            return
+
+        had_known_value = any(
+            value is not None for value in self.local_clock_offsets.values()
+        )
+        self.local_clock_offsets = {ca_id: None for ca_id in self.remote_ca_ids}
+        self.last_local_clock_offset_update_ms = None
+        if had_known_value:
+            self.log_message.emit(
+                "local_clock_offset expired after more than 1000 ms without "
+                "an effective update; all entries set to Unknown"
+            )
+            self.state_changed.emit(self.snapshot())
 
     def _handle_data_message(
         self,
@@ -573,6 +634,8 @@ class CAEngine(QObject):
             self.selected_cycle_anchor_ms = None
 
         self.local_clock_offsets = {ca_id: None for ca_id in self.remote_ca_ids}
+        self.last_local_clock_offset_update_ms = None
+        self.local_offset_expiry_timer.stop()
         self.current_used_clock_list = None
         self._cancel_timers(self.apply_timers)
         self.log_message.emit(f"Selected CM changed to {cm_es_id}: {reason}")

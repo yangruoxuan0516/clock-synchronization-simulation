@@ -77,6 +77,12 @@ class CANodeConfig(StrictModel):
     t2: float
     dmax: float = Field(ge=0.0)
     topology_path: str = Field(min_length=1)
+    # Simulation-only transport compatibility switch. When True, this CA
+    # actively sends both CA-to-CM transport probes and CA-to-CA peer probes.
+    # Incoming probes are still accepted when False, allowing only the node on
+    # a restrictive host to enable the workaround. Omission preserves the
+    # original direct-UDP simulation behavior.
+    probe_enabled: bool = Field(default=False, strict=True)
 
 
 class RequestMessage(StrictModel):

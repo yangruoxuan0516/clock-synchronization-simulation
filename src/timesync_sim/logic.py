@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Set
 
-from .constants import CM_UNAVAILABLE_MS
+from .constants import CM_UNAVAILABLE_MS, LOCAL_CLOCK_OFFSET_EXPIRY_MS
 from .math_utils import calculate_local_clock_offset
 from .models import ClockOffsetListMessage
 
@@ -47,6 +47,17 @@ def choose_cm_after_timeout(
     if available:
         return available[0]
     return current_cm_es_id
+
+
+def local_clock_offsets_are_stale(
+    last_update_ms: Optional[int],
+    now_ms: int,
+) -> bool:
+    """Return True only after offsets have gone over 1000 ms without update."""
+    return (
+        last_update_ms is not None
+        and now_ms - last_update_ms > LOCAL_CLOCK_OFFSET_EXPIRY_MS
+    )
 
 
 def compute_local_offsets_from_list(

@@ -48,7 +48,7 @@ def calculate_local_clock_offset(
         Decimal(str(remote_relative_offset))
         - Decimal(str(local_relative_offset))
         + Decimal(str(remote_relative_offset_error))
-        - Decimal(str(local_relative_offset_error))
+        + Decimal(str(local_relative_offset_error))
         + max(Decimal(str(remote_delay)), Decimal(str(local_delay)))
     )
     return float(result)
