@@ -132,6 +132,12 @@ class CAEngine(QObject):
 
         self.response_timers: List[QTimer] = []
         self.apply_timers: List[QTimer] = []
+        # One receiver-side timer per CA data message.  A datagram has already
+        # reached this process when its timer is created, but the message is
+        # not exposed to CA integrity processing until its configured
+        # transmission_latency has elapsed.  Reset deliberately does not
+        # cancel these timers: they represent messages already in flight.
+        self.data_delivery_timers: List[QTimer] = []
         self.reset_generation = 0
         self.running = False
 
@@ -175,6 +181,10 @@ class CAEngine(QObject):
         self.local_offset_expiry_timer.stop()
         self._cancel_timers(self.response_timers)
         self._cancel_timers(self.apply_timers)
+        # Stopping closes this CA process, so its in-memory simulated network
+        # deliveries cannot survive.  Ordinary reset intentionally leaves
+        # these timers running.
+        self._cancel_timers(self.data_delivery_timers)
 
     def update_t2(self, new_t2: float) -> None:
         self.config.t2 = new_t2
@@ -190,8 +200,6 @@ class CAEngine(QObject):
         self.reset_generation += 1
         self._cancel_timers(self.response_timers)
         self._cancel_timers(self.apply_timers)
-        for queued in self.pending_peer_messages.values():
-            queued.clear()
         if new_t2 is not None:
             self.config.t2 = new_t2
         self.log_message.emit(
@@ -240,8 +248,9 @@ class CAEngine(QObject):
         # Compatibility mode: do not sacrifice the user's first data message
         # merely to open a UDP path. Queue it, initiate the transport handshake,
         # and send it as soon as either a probe or ACK reveals a usable route.
-        # Reset clears this queue, matching the requirement to cancel unsent
-        # messages.
+        # The message object was created at click time, so its reset_counter,
+        # latency, and payload remain that click-time snapshot even if this CA
+        # resets before the handshake completes.  Reset does not clear it.
         self.pending_peer_messages[receiver_ca_es_id].append(message)
         self._send_ca_peer_probe(receiver_ca_es_id)
         self.log_message.emit(
@@ -363,7 +372,7 @@ class CAEngine(QObject):
         elif isinstance(message, CAPeerAckMessage):
             self._handle_ca_peer_ack(message, sender_ip, sender_port)
         elif isinstance(message, DataMessage):
-            self._handle_data_message(message, sender_ip, sender_port)
+            self._schedule_data_message_delivery(message, sender_ip, sender_port)
 
     def _handle_request(self, message: RequestMessage) -> None:
         endpoint = self.cm_endpoints.get(message.cm_es_id)
@@ -561,7 +570,7 @@ class CAEngine(QObject):
             )
             self.state_changed.emit(self.snapshot())
 
-    def _handle_data_message(
+    def _schedule_data_message_delivery(
         self,
         message: DataMessage,
         sender_ip: str,
@@ -580,6 +589,30 @@ class CAEngine(QObject):
             sender_ip,
             sender_port,
         )
+
+        delivery_timer = QTimer(self)
+        delivery_timer.setSingleShot(True)
+        delivery_timer.setTimerType(Qt.PreciseTimer)
+        delivery_timer.timeout.connect(
+            partial(
+                self._deliver_data_message,
+                message,
+                delivery_timer,
+            )
+        )
+        self.data_delivery_timers.append(delivery_timer)
+        delivery_timer.start(message.transmission_latency)
+
+    def _deliver_data_message(
+        self,
+        message: DataMessage,
+        timer: QTimer,
+    ) -> None:
+        self._remove_timer(self.data_delivery_timers, timer)
+
+        # Read receiver state only when the simulated latency expires.  A reset
+        # or a new effective clock-offset list during the wait therefore
+        # changes the integrity result exactly as it would at actual arrival.
         local_offset = self.local_clock_offsets.get(message.sender_ca_es_id)
         list_counter: Optional[int] = None
         if self.current_used_clock_list is not None:

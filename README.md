@@ -197,6 +197,10 @@ Each ES must have a unique IP/port pair. Closing a window stops that process.
 
 For a received CA data message:
 
+The UDP datagram is decoded immediately, but the CA message is not exposed to
+integrity processing or the receiver GUI until its configured
+`transmission_latency` has elapsed on an independent receiver-side timer. Then:
+
 1. `Dmax == 0` passes.
 2. Unknown `local_clock_offset[sender]` passes.
 3. Otherwise, a reset-counter mismatch discards.
@@ -212,7 +216,11 @@ call .venv\Scripts\activate.bat
 python -m pytest
 ```
 
-The tests cover configuration validation, duplicate ES_ID detection, protocol serialization, ROUND_HALF_UP behavior, local-offset calculation, CM election/failover helpers, and time-integrity branches.
+The tests cover configuration validation, duplicate ES_ID detection, protocol
+serialization, ROUND_HALF_UP behavior, local-offset calculation, CM
+election/failover helpers, time-integrity branches, independent CA-message
+latency timers, receiver reset during latency, and probe-queued messages across
+sender reset.
 
 ## 10. Current limitations and assumptions
 
@@ -224,7 +232,18 @@ The tests cover configuration validation, duplicate ES_ID detection, protocol se
 - Fractional timer delays are rounded upward to an integer millisecond. Message calculations retain the configured numeric values.
 - A failover may immediately use the most recent cached list from the newly selected CM, then publishes its calculated local offsets at that CM's next inferred cycle boundary.
 - Switching CM clears the effective list and local offsets before the new source becomes effective. This prevents stale offsets from being presented as belonging to the new source.
-- Reset cancels scheduled responses and pending local-offset applications. CA data messages are sent immediately, so there is no queued CA data message to cancel.
+- Reset cancels scheduled responses and pending local-offset applications, but
+  does not cancel received CA data messages waiting on their receiver-side
+  latency timers.
+- When `probe_enabled=true` and the CA peer path is not ready, a clicked data
+  message remains queued across sender reset. Its payload, latency, and sender
+  reset counter remain the values captured when Send was clicked.
+- Delivery-time integrity processing reads the receiver's current
+  `local_clock_offset` and effective clock-offset list when the latency timer
+  expires. Receiver reset during the wait can therefore change the result.
+- Closing/restarting the receiver process still loses in-memory latency timers;
+  preserving messages across process restart would require a separate network
+  process or persistent queue.
 - Datagram sender IP/port is not cryptographically authenticated. The protocol validates message structure, ES_ID, role, and destination fields.
 - The GUI shows numeric values to three decimal places, while local-offset calculations are not forcibly quantized unless the specified formula requires it.
 - The project does not simulate true clock drift over time; `clock_drift_rate` is used only in `relative_offset_error`.
@@ -245,7 +264,7 @@ The tests cover configuration validation, duplicate ES_ID detection, protocol se
 }
 ```
 
-- `true`: this CA actively sends both CA-to-CM `transport_probe` messages and CA-to-CA `ca_peer_probe` messages. The first CA data message may be queued until the peer path is ready.
+- `true`: this CA actively sends both CA-to-CM `transport_probe` messages and CA-to-CA `ca_peer_probe` messages. The first CA data message may be queued until the peer path is ready; ordinary sender reset does not remove it.
 - `false`: this CA sends no probes. CM traffic uses normal direct CM push, and CA data is sent once directly to the endpoint in `topology.json`.
 - omitted: defaults to `false`.
 
