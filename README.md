@@ -1,20 +1,25 @@
 # Time Synchronization + CA Communication Simulator
 
-A Windows-oriented Python 3.9 project that runs each Clock Manager (CM) and Clock Agent (CA) as a separate PySide6 process. Processes communicate through UDP unicast endpoints declared in `configs/topology.json`.
+A Python/PySide6 simulator in which every Clock Manager (CM) and Clock Agent (CA) runs as a separate process. The processes exchange strict JSON protocol messages over UDP endpoints declared in a topology file.
+
+The current implementation includes CM/CA time synchronization, CM election and failover, CA reset handling, optional UDP probe compatibility mode, CA-to-CA time-integrity checking, and receiver-side simulated transmission latency.
 
 ## 1. Project structure
 
 ```text
-time_sync_ca_sim/
+HITP simulation v2_副本/
 ├── README.md
+├── COMPLETE_PROJECT.md
 ├── requirements.txt
 ├── pytest.ini
-├── setup_env.cmd
-├── run_all_demo.cmd
+├── setup_env.sh
+├── run_all_demo.sh
 ├── run_cm.py
 ├── run_ca.py
 ├── configs/
 │   ├── topology.json
+│   ├── topology-local.json
+│   ├── topology-hotspot.json
 │   ├── cm_1.json
 │   ├── cm_2.json
 │   ├── ca_101.json
@@ -42,78 +47,103 @@ time_sync_ca_sim/
     ├── test_config.py
     ├── test_logic.py
     ├── test_math_utils.py
-    └── test_protocol.py
+    ├── test_protocol.py
+    └── test_ca_message_latency.py
 ```
 
-## 2. Environment setup on Windows CMD
+Generated caches such as `.pytest_cache/` are not part of the project source.
 
-Open **Command Prompt**, not PowerShell, then run:
+## 2. Environment setup
 
-```bat
-cd /d C:\path\to\time_sync_ca_sim
-setup_env.cmd
+Dependencies are pinned in `requirements.txt`:
+
+```text
+PySide6-Essentials==6.8.3
+pydantic==2.10.6
+pytest==8.3.5
 ```
 
-Equivalent manual commands:
+### macOS/Linux shell
+
+The supplied setup script currently invokes `python3.13`:
+
+```bash
+cd "/path/to/HITP simulation v2_副本"
+chmod +x setup_env.sh run_all_demo.sh
+./setup_env.sh
+```
+
+Equivalent manual setup:
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pytest
+```
+
+### Windows CMD
+
+There is no `.cmd` setup script in the current archive. Use the equivalent commands:
 
 ```bat
-cd /d C:\path\to\time_sync_ca_sim
-py -3.9 -m venv .venv
+cd /d C:\path\to\HITP simulation v2_副本
+py -3.13 -m venv .venv
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m pytest
 ```
 
-If `py -3.9` is unavailable but `python` points to Python 3.9, use:
+If the exact `3.13` launcher name is unavailable, use a Python installation compatible with the pinned packages and replace the interpreter command accordingly.
 
-```bat
-python -m venv .venv
+## 3. Running the simulator
+
+### Run one process manually
+
+macOS/Linux:
+
+```bash
+source .venv/bin/activate
+python run_cm.py configs/cm_1.json
+python run_ca.py configs/ca_101.json
 ```
 
-## 3. Run the supplied four-process demonstration
-
-```bat
-cd /d C:\path\to\time_sync_ca_sim
-run_all_demo.cmd
-```
-
-This launches:
-
-- CM ES_ID 1 on `127.0.0.1:12001`
-- CM ES_ID 2 on `127.0.0.1:12002`
-- CA ES_ID 101 on `127.0.0.1:12101`
-- CA ES_ID 102 on `127.0.0.1:12102`
-
-Start the CMs and CAs close together in time. Their process start clocks are independent; the CA display is aligned to the currently selected CM when requests arrive.
-
-## 4. Run one process manually
-
-Activate the environment first:
+Windows CMD:
 
 ```bat
 call .venv\Scripts\activate.bat
-```
-
-Run with a configuration path:
-
-```bat
 python run_cm.py configs\cm_1.json
 python run_ca.py configs\ca_101.json
 ```
 
-Run without a path to use the file-selection and confirmation dialog:
+Running either launcher without a path opens a JSON file-selection and confirmation dialog:
 
-```bat
+```bash
 python run_cm.py
 python run_ca.py
 ```
 
-Each ES must have a unique IP/port pair. Closing a window stops that process.
+Each process binds its configured UDP port on `0.0.0.0`/AnyIPv4. The topology IP is the address advertised to other ES processes. Each ES must have a unique `ES_ID`, and every topology endpoint must have a unique IP/port pair.
 
-## 5. Configuration format
+### Supplied demo script
 
-### CM node JSON
+```bash
+./run_all_demo.sh
+```
+
+The current script starts:
+
+- CM 1 with `configs/cm_1.json`
+- CM 2 with `configs/cm_2.json`
+- CA 101 with `configs/ca_101.json`
+
+The CA 102 command is currently commented out in `run_all_demo.sh`. Uncomment it to start all four supplied processes.
+
+## 4. Configuration
+
+### CM node configuration
 
 ```json
 {
@@ -125,7 +155,12 @@ Each ES must have a unique IP/port pair. Closing a window stops that process.
 }
 ```
 
-### CA node JSON
+- `es_id`: non-negative ES identifier.
+- `t1`: configured request timestamp/phase in milliseconds. Its range is intentionally not validated.
+- `e1`: lead error in milliseconds, in `[0, 655.35]`; default `0`.
+- `topology_path`: resolved relative to the node JSON file.
+
+### CA node configuration
 
 ```json
 {
@@ -133,13 +168,17 @@ Each ES must have a unique IP/port pair. Closing a window stops that process.
   "es_id": 101,
   "t2": 300.0,
   "dmax": 50.0,
-  "topology_path": "topology.json"
+  "topology_path": "topology.json",
+  "probe_enabled": false
 }
 ```
 
-### Topology JSON
+- `es_id`: non-negative ES identifier.
+- `t2`: configured response timestamp in milliseconds. Its range is intentionally not validated.
+- `dmax`: non-negative time-integrity threshold in milliseconds.
+- `probe_enabled`: simulation-only transport compatibility switch; strict Boolean; defaults to `false`.
 
-`ca_parameters` is keyed by CA ES_ID. JSON object keys are strings on disk and are converted to integers by Pydantic.
+### Topology configuration
 
 ```json
 {
@@ -169,110 +208,231 @@ Each ES must have a unique IP/port pair. Closing a window stops that process.
 }
 ```
 
-## 6. Implemented timing behavior
+Topology validation rejects:
 
-- Each CM has a local monotonic 1000 ms cycle.
-- At configured T1, a CM sends the current request and the completed previous `clock_offset_list` in the same event-loop iteration.
-- The first cycle sends no list.
-- Responses received at a CM phase greater than 500 ms are excluded.
-- A cycle's list becomes complete at the next 1000 ms boundary and is transmitted at the next T1.
-- A CA replies to every valid CM request after `max(0, T2 - request.T1)` milliseconds.
-- T1 and T2 inside messages are fixed configuration values; they are not generated from UDP timestamps.
-- `relative_offset_error` uses decimal `ROUND_HALF_UP` to 0.001.
-- `None` is encoded as JSON `null` and displayed as `Unknown`.
-- A selected CM list is calculated immediately but only becomes the CA's effective list at the next selected-CM cycle boundary.
-- During that pending interval, time integrity checks continue using the previous effective list.
+- duplicate `ES_ID` values;
+- duplicate IP/port pairs;
+- missing CA parameter entries;
+- CA parameters belonging to non-CA endpoints;
+- a node JSON whose role does not match its topology endpoint.
 
-## 7. CM selection behavior
+The supplied topology variants are:
 
-- The first structurally valid request starts the election window.
-- Window duration is `max(0, T2 - request.T1)`, rounded upward to the next whole millisecond because `QTimer` uses integer milliseconds.
-- The smallest CM ES_ID seen during the window is selected.
-- After initial election, a newly appearing lower ES_ID does not trigger a proactive switch.
-- The selected CM is unavailable when no new list has arrived for at least 2000 ms.
-- On unavailability, the smallest ES_ID among CMs with a list newer than 2000 ms is selected.
-- A higher-priority CM recovery does not replace a currently available CM.
+- `topology-local.json`: all four ES processes on localhost;
+- `topology-hotspot.json`: supplied hotspot addresses;
+- `topology.json`: supplied cross-host addresses currently referenced by all node JSON files.
 
-## 8. Time integrity check
+To select another topology, change `topology_path` in each relevant node configuration.
 
-For a received CA data message:
+## 5. Protocol messages
 
-The UDP datagram is decoded immediately, but the CA message is not exposed to
-integrity processing or the receiver GUI until its configured
-`transmission_latency` has elapsed on an independent receiver-side timer. Then:
+All datagrams are UTF-8 JSON and use `protocol_version = 1`. Pydantic models reject unknown fields.
 
-1. `Dmax == 0` passes.
-2. Unknown `local_clock_offset[sender]` passes.
-3. Otherwise, a reset-counter mismatch discards.
-4. Otherwise, `age` equals the message's configured `transmission_latency`.
-5. Only `0 < age < Dmax` passes.
+Implemented message types:
 
-The receiver opens a non-modal flowchart window and highlights the traversed decisions and final result.
+- `request`
+- `response`
+- `clock_offset_list`
+- `transport_probe`
+- `ca_peer_probe`
+- `ca_peer_ack`
+- `ca_data`
 
-## 9. Tests
+`None` is serialized as JSON `null` and displayed as `Unknown` in the GUI.
 
-```bat
-call .venv\Scripts\activate.bat
+## 6. CM cycle and clock-offset-list behavior
+
+- Each CM uses its own monotonic 1000 ms cycle.
+- The CM event loop is checked every 10 ms.
+- At phase `T1`, the CM sends the current `request` to every CA.
+- In the same event-loop iteration, it also sends the previously completed `clock_offset_list`, if one exists.
+- The first request has no previous list to send.
+- `request_number = cycle_index mod 65536`.
+- A CA schedules its response after `ceil(max(0, T2 - request.T1))` milliseconds.
+- The response carries the CA's `T2` and `reset_counter` values at the time the response timer expires.
+- The CM only accepts a response for its current request number and only when the CM cycle phase is at most 500 ms.
+- For an accepted response:
+
+```text
+relative_offset = T2 - T1
+```
+
+- If no accepted response exists for a CA, that list entry's `relative_offset` is `Unknown`; the most recently received reset counter for that CA is retained.
+- The current cycle's list is finalized at the next 1000 ms boundary and becomes the list sent at the following `T1`.
+- The CM GUI retains two fixed request buttons to avoid UI flicker. A completed request button opens its list.
+
+The CM calculates each CA's relative-offset error once from configuration:
+
+```text
+relative_offset_error = round_half_up_0.001(
+    3000 * clock_drift_rate + E1 + L2
+)
+```
+
+## 7. CA election, list application, and local offsets
+
+### Initial CM election
+
+- The first valid request starts the election window.
+- Window length is `ceil(max(0, T2 - first_request.T1))` milliseconds.
+- The smallest CM `ES_ID` observed during that window is selected.
+- A lower-ID CM appearing after the initial election does not proactively replace an available selected CM.
+
+### CM availability and failover
+
+- A selected CM is treated as unavailable when no clock-offset list has been received from it for at least 2000 ms.
+- If the selected CM has never supplied a list, time since selection is used.
+- Failover chooses the smallest CM `ES_ID` whose list is newer than 2000 ms.
+- Recovery of a higher-priority CM does not replace the currently available CM.
+
+### Applying a selected CM list
+
+- A list must contain exactly the CA set declared in topology.
+- Duplicate list request numbers from the same CM are ignored.
+- Lists from non-selected CMs are cached for possible failover.
+- A selected list is rejected unless this CA's entry contains its current `reset_counter`.
+- Local offsets are calculated immediately but become effective only at the next inferred cycle boundary of the selected CM.
+- Until then, the previous effective list remains in use, except after reset or CM switch, where the effective list is cleared.
+- A pending application is discarded if the CA resets or the selected CM changes before the timer expires.
+
+For each remote CA:
+
+```text
+local_clock_offset[remote]
+    = relative_offset[remote]
+    - relative_offset[local]
+    + relative_offset_error[remote]
+    + relative_offset_error[local]
+    + max(relative_offset_delay[remote], relative_offset_delay[local])
+```
+
+If any required value is unknown, the result is `Unknown`.
+
+### Local-offset expiry
+
+- The freshness timer starts when a newly calculated offset list becomes effective.
+- If more than 1000 ms passes without another effective update, all `local_clock_offset` entries become `Unknown`.
+- This timeout is measured from the last effective application, not from list reception or cycle start.
+
+## 8. CA reset behavior
+
+Clicking **Reset** performs the following:
+
+- increments `reset_counter` modulo 256;
+- sets all local offsets to `Unknown`;
+- clears the current effective clock-offset list;
+- stops the local-offset expiry timer;
+- cancels scheduled CM responses that have not yet been sent;
+- cancels clock-list applications that have not yet become effective;
+- leaves the selected-CM/election state intact;
+- leaves learned CA peer routes intact;
+- does not remove CA data messages queued while waiting for a probe handshake;
+- does not cancel receiver-side data-message latency timers.
+
+After reset, the GUI offers an optional T2 change. Canceling that dialog keeps the current T2.
+
+## 9. Optional UDP probe compatibility mode
+
+`probe_enabled` is not part of the logical synchronization or integrity protocol. It is a simulation transport workaround for hosts or firewalls that more reliably accept UDP replies to traffic initiated from the local socket.
+
+### `probe_enabled = false`
+
+- No periodic probes are initiated by that CA.
+- CM request/list delivery relies on normal CM direct UDP push.
+- Without a fresh learned CA peer route, a CA data message is sent once directly to the peer endpoint in topology.
+- No retry or delivery acknowledgement is added.
+
+### `probe_enabled = true`
+
+- The CA sends `transport_probe` messages to every CM every 20 ms.
+- A CM can return its current request and current previous list to the probe's observed source IP/port.
+- The CA sends `ca_peer_probe` messages to every other CA every 500 ms.
+- Incoming peer probes receive an immediate `ca_peer_ack`.
+- A learned peer route is considered fresh for 1500 ms.
+- If a fresh route exists, CA data is sent immediately through it.
+- If no fresh route exists, the clicked message is queued, a peer probe is sent immediately, and the message is sent when a probe, ACK, or data packet reveals a usable route.
+
+A CA accepts and replies to incoming peer probes even when its own `probe_enabled` is `false`. A CM always accepts valid incoming transport probes.
+
+A queued data-message object is created when **Send message** is clicked. Its payload, configured latency, destination, and sender reset counter are therefore click-time snapshots. Ordinary sender reset does not alter or delete it.
+
+## 10. CA-to-CA transmission latency
+
+`transmission_latency` has two simultaneous meanings:
+
+1. it is the configured `age` used by the time-integrity calculation;
+2. it creates a real receiver-side delay before the message becomes visible to CA logic and GUI.
+
+The implemented sequence is:
+
+```text
+Send clicked
+→ DataMessage fields frozen
+→ direct UDP send, learned-route send, or probe queue
+→ receiver process receives and decodes UDP datagram
+→ receiver creates one independent single-shot timer
+→ wait transmission_latency milliseconds
+→ read receiver's current state
+→ run time-integrity check
+→ log PASS/DISCARD and open the integrity dialog
+```
+
+Important consequences:
+
+- The latency timer starts when the receiver process receives the UDP datagram, not when the sender button is clicked.
+- Probe-handshake waiting and actual network transit time are additional to the configured latency.
+- Each received message has an independent timer; a later message with a shorter latency may be delivered first.
+- A receiver reset during the wait does not cancel the timer.
+- At timer expiry, integrity processing reads the latest receiver `local_clock_offset` and effective clock-offset list. A reset or list update during the wait can therefore change the result.
+- The integrity `age` remains the configured latency, not the measured wall-clock delay.
+- Closing or restarting the receiver process cancels in-memory timers and loses those pending deliveries. Preserving messages across receiver restart would require a separate network process, broker, or persistent queue.
+
+This is an application-visible network-delay simulation. The UDP datagram has already entered the receiver process while the timer is running.
+
+## 11. Time-integrity check
+
+At simulated delivery time, the receiver evaluates the message in this order:
+
+1. If `Dmax == 0`, PASS.
+2. If `local_clock_offset[sender]` is `Unknown`, PASS.
+3. Otherwise, compare the message's click-time sender `reset_counter` with the sender entry in the receiver's current effective list. A mismatch or unavailable list counter causes DISCARD.
+4. Otherwise, set `age = transmission_latency`.
+5. PASS only when `0 < age < Dmax`; the interval is strict.
+
+The GUI opens a non-modal flowchart window and highlights the traversed decisions and final result.
+
+## 12. Tests
+
+The repository contains 20 tests:
+
+- 17 non-Qt configuration, protocol, calculation, election/failover, and integrity tests;
+- 3 Qt event-loop tests for receiver reset during latency, independent message timers, and probe-queued messages surviving sender reset with click-time fields.
+
+Run all tests after installing the pinned requirements:
+
+```bash
 python -m pytest
 ```
 
-The tests cover configuration validation, duplicate ES_ID detection, protocol
-serialization, ROUND_HALF_UP behavior, local-offset calculation, CM
-election/failover helpers, time-integrity branches, independent CA-message
-latency timers, receiver reset during latency, and probe-queued messages across
-sender reset.
+The 17 non-Qt tests can be run separately with:
 
-## 10. Current limitations and assumptions
-
-- Windows timer scheduling and Qt event-loop latency can shift an action by several milliseconds. Logical timestamps remain fixed, but the 500 ms and 2000 ms decisions use real process time.
-- Separate CM processes are not started from a shared global epoch. A CA derives the selected CM's cycle phase from request receipt time minus that request's T1.
-- UDP on localhost normally has negligible delay, but UDP remains unreliable and unordered. No retransmission or acknowledgement layer is added.
-- A virtual link is represented as direct UDP unicast to a topology endpoint. BAG, switch routing, bandwidth policing, redundancy, and AFDX frame behavior are outside this implementation.
-- `T1` and `T2` ranges and `T1 < T2` are intentionally not validated. Negative response/election delays are clamped to zero because Qt cannot schedule a negative timer.
-- Fractional timer delays are rounded upward to an integer millisecond. Message calculations retain the configured numeric values.
-- A failover may immediately use the most recent cached list from the newly selected CM, then publishes its calculated local offsets at that CM's next inferred cycle boundary.
-- Switching CM clears the effective list and local offsets before the new source becomes effective. This prevents stale offsets from being presented as belonging to the new source.
-- Reset cancels scheduled responses and pending local-offset applications, but
-  does not cancel received CA data messages waiting on their receiver-side
-  latency timers.
-- When `probe_enabled=true` and the CA peer path is not ready, a clicked data
-  message remains queued across sender reset. Its payload, latency, and sender
-  reset counter remain the values captured when Send was clicked.
-- Delivery-time integrity processing reads the receiver's current
-  `local_clock_offset` and effective clock-offset list when the latency timer
-  expires. Receiver reset during the wait can therefore change the result.
-- Closing/restarting the receiver process still loses in-memory latency timers;
-  preserving messages across process restart would require a separate network
-  process or persistent queue.
-- Datagram sender IP/port is not cryptographically authenticated. The protocol validates message structure, ES_ID, role, and destination fields.
-- The GUI shows numeric values to three decimal places, while local-offset calculations are not forcibly quantized unless the specified formula requires it.
-- The project does not simulate true clock drift over time; `clock_drift_rate` is used only in `relative_offset_error`.
-
-
-## Patch: Per-CA `probe_enabled` switch
-
-`probe_enabled` is a simulation-only UDP transport compatibility option in each CA node JSON. It is not part of the logical time-synchronization or time-integrity protocol.
-
-```json
-{
-  "role": "CA",
-  "es_id": 101,
-  "t2": 300.0,
-  "dmax": 50.0,
-  "topology_path": "topology.json",
-  "probe_enabled": true
-}
+```bash
+python -m pytest \
+  tests/test_config.py \
+  tests/test_logic.py \
+  tests/test_math_utils.py \
+  tests/test_protocol.py
 ```
 
-- `true`: this CA actively sends both CA-to-CM `transport_probe` messages and CA-to-CA `ca_peer_probe` messages. The first CA data message may be queued until the peer path is ready; ordinary sender reset does not remove it.
-- `false`: this CA sends no probes. CM traffic uses normal direct CM push, and CA data is sent once directly to the endpoint in `topology.json`.
-- omitted: defaults to `false`.
+## 13. Current limitations and assumptions
 
-A CA always accepts and replies to an incoming CA peer probe even when its own switch is false. A CM always accepts an incoming transport probe. This permits only the CA running on a restrictive Windows host to set `true`, while a CA on macOS can set `false`.
-
-Current probe intervals when enabled:
-
-- CA-to-CM transport probe: every 20 ms to every configured CM.
-- CA-to-CA peer probe: every 500 ms to every other configured CA.
-
-Configuration changes require restarting that CA process.
+- Qt and operating-system timer scheduling can shift actions by several milliseconds.
+- Fractional response, election, and list-application delays are rounded upward to whole milliseconds; configured numeric values remain unchanged inside calculations and messages.
+- Separate CM processes do not share a global epoch. A CA infers the selected CM's phase from local request receipt time minus the request's configured T1.
+- UDP remains unreliable and unordered. Direct data sends have no retransmission or end-to-end delivery acknowledgement.
+- Virtual links are represented as direct UDP unicast. BAG, switch queuing, bandwidth policing, redundancy, fragmentation, and AFDX frame behavior are not simulated.
+- `T1`, `T2`, and `T1 < T2` are intentionally not range-validated. Negative derived timer delays are clamped to zero.
+- Datagram source addresses are learned for transport purposes but are not cryptographically authenticated.
+- `clock_drift_rate` does not advance a physically drifting local clock; it is used only in the configured relative-offset-error formula.
+- GUI numeric values are normally displayed to three decimal places. Only `relative_offset_error` is explicitly quantized with decimal `ROUND_HALF_UP` to 0.001.
+- Receiver-side latency timers and sender-side probe queues exist only in process memory and do not survive process closure or restart.
